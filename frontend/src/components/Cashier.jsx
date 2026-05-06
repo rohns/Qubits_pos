@@ -96,6 +96,25 @@ export default function Cashier({ user }) {
     } finally { setLoadingCash(false); }
   };
 
+  const payMpesaCash = async () => {
+    if (!cart.length) return toast.warning('Add at least one service.');
+    if (!cashPaid)    return toast.warning('Enter amount received.');
+    if (Number(cashPaid) < total) return toast.warning('Amount received is less than total.');
+    setLoadingCash(true);
+    try {
+      const sale  = await createSale();
+      const saved = [...cart];
+      const r     = await api.post('/payments/mpesa-cash/', { sale_id: sale.id, amount_paid: cashPaid });
+      buildReceipt(sale, saved, 'M-PESA', { amountPaid: cashPaid, changeDue: r.data.change_due });
+      toast.success(`M-PESA (cash) recorded — Change: KES ${Number(r.data.change_due).toLocaleString()}`);
+      setCart([]); setPhone(''); setCashPaid('');
+    } catch (err) {
+      const detail = err.response?.data?.error || err.response?.data?.detail || 'M-PESA cash payment failed.';
+      toast.error(detail);
+      console.error(err.response?.data || err);
+    } finally { setLoadingCash(false); }
+  };
+
   const payMpesa = async () => {
     if (!cart.length) return toast.warning('Add at least one service.');
     if (!phone)       return toast.warning('Enter customer M-PESA phone number.');
@@ -265,6 +284,9 @@ export default function Cashier({ user }) {
               )}
               <button className="btn btn-primary btn-lg w-100 mt-2" onClick={payCash} disabled={loadingCash} title="Ctrl+Enter">
                 {loadingCash ? 'Processing…' : '💵 Pay Cash'}
+              </button>
+              <button className="btn btn-success btn-lg w-100 mt-2" onClick={payMpesaCash} disabled={loadingCash}>
+                {loadingCash ? 'Processing…' : '📱 Paid via M-PESA'}
               </button>
               <button className="btn btn-outline-secondary w-100 mt-2" onClick={clearCart}>Clear Cart (Esc)</button>
 

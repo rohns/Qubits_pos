@@ -110,6 +110,66 @@ def cash_payment(request):
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
+def mpesa_cash_payment(request):
+    """Record M-PESA payment received as cash (no STK push)."""
+    sale_id = request.data.get("sale_id")
+    amount_paid = request.data.get("amount_paid")
+
+    if not sale_id or amount_paid in (None, ""):
+        return Response({"error": "sale_id and amount_paid are required"}, status=400)
+
+    try:
+        amount_paid = Decimal(str(amount_paid))
+    except (InvalidOperation, TypeError):
+        return Response({"error": "amount_paid must be a valid number"}, status=400)
+
+    try:
+        with transaction.atomic():
+            sale = Sale.objects.select_for_update().get(id=sale_id)
+
+            if sale.status == "PAID":
+                existing = sale.payments.filter(status="PAID").order_by("-created_at").first()
+                return Response({
+                    "message": "Sale is already paid",
+                    "payment_id": existing.id if existing else None,
+                    "sale_id": sale.id,
+                    "status": "PAID",
+                    "amount": str(sale.total_amount),
+                    "amount_paid": str(existing.amount_paid if existing else sale.total_amount),
+                    "change_due": str(existing.change_due if existing else Decimal("0")),
+                }, status=200)
+
+            total = Decimal(str(sale.total_amount))
+            if amount_paid < total:
+                return Response({"error": "Amount paid is less than sale total"}, status=400)
+
+            payment = Payment.objects.create(
+                sale=sale,
+                method="MPESA",  # Categorized as M-PESA
+                status="PAID",
+                amount=total,
+                amount_paid=amount_paid,
+                change_due=amount_paid - total,
+            )
+            sale.status = "PAID"
+            sale.payment_method = "MPESA"  # Sale shows as M-PESA
+            sale.save(update_fields=["status", "payment_method"])
+    except Sale.DoesNotExist:
+        return Response({"error": "Sale not found"}, status=404)
+
+    return Response({
+        "message": "M-PESA cash payment recorded",
+        "payment_id": payment.id,
+        "sale_id": sale.id,
+        "status": payment.status,
+        "amount": str(total),
+        "amount_paid": str(amount_paid),
+        "change_due": str(payment.change_due),
+    }, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
 def stk_push(request):
     sale_id = request.data.get("sale_id")
     phone = normalize_mpesa_phone(request.data.get("phone"))
