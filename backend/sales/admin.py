@@ -8,6 +8,7 @@ class SaleItemInline(admin.TabularInline):
 
 @admin.register(Sale)
 class SaleAdmin(admin.ModelAdmin):
-    list_display = ('id','cashier','total_amount','status','payment_method','created_at')
+    list_display = ('id','cashier','customer_name','total_amount','status','payment_method','created_at')
     list_filter = ('status','payment_method')
+    search_fields = ('receipt_number','customer_name','customer_phone')
     inlines = [SaleItemInline]

@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -12,6 +13,8 @@ from rest_framework.response import Response
 
 from sales.models import Sale
 from .models import Payment
+
+MPESA_TOKEN_CACHE_KEY = "mpesa_access_token"
 
 
 def normalize_mpesa_phone(phone):
@@ -29,6 +32,15 @@ def normalize_mpesa_phone(phone):
 
 
 def get_mpesa_access_token():
+    """
+    Daraja OAuth tokens are valid for ~3600 seconds. Fetching a new one on every
+    STK push adds latency and risks hitting Safaricom's rate limits, so cache it
+    and only refetch shortly before it would expire.
+    """
+    cached_token = cache.get(MPESA_TOKEN_CACHE_KEY)
+    if cached_token:
+        return cached_token
+
     url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
     if getattr(settings, "MPESA_ENV", "sandbox") == "production":
         url = "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
@@ -39,7 +51,12 @@ def get_mpesa_access_token():
         timeout=30,
     )
     response.raise_for_status()
-    return response.json()["access_token"]
+    payload = response.json()
+    token = payload["access_token"]
+    # expires_in is usually "3599"; refresh a bit early to be safe.
+    expires_in = int(payload.get("expires_in", 3599))
+    cache.set(MPESA_TOKEN_CACHE_KEY, token, timeout=max(60, expires_in - 120))
+    return token
 
 
 def _metadata_value(callback_metadata, name):
@@ -111,12 +128,25 @@ def cash_payment(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def mpesa_cash_payment(request):
-    """Record M-PESA payment received as cash (no STK push)."""
+    """
+    Record an M-PESA payment that the cashier confirmed manually (e.g. paid to a
+    paybill/till and read out over the counter) rather than through an STK push.
+    Since there's no callback from Safaricom for this flow, the confirmation code
+    from the customer's SMS is required so there's an audit trail to check against
+    later if a payment is ever disputed.
+    """
     sale_id = request.data.get("sale_id")
     amount_paid = request.data.get("amount_paid")
+    mpesa_reference = (request.data.get("mpesa_reference") or "").strip().upper()
 
     if not sale_id or amount_paid in (None, ""):
         return Response({"error": "sale_id and amount_paid are required"}, status=400)
+
+    if not mpesa_reference:
+        return Response(
+            {"error": "mpesa_reference is required — enter the M-PESA confirmation code from the customer's SMS."},
+            status=400,
+        )
 
     try:
         amount_paid = Decimal(str(amount_paid))
@@ -150,6 +180,7 @@ def mpesa_cash_payment(request):
                 amount=total,
                 amount_paid=amount_paid,
                 change_due=amount_paid - total,
+                mpesa_reference=mpesa_reference,
             )
             sale.status = "PAID"
             sale.payment_method = "MPESA"  # Sale shows as M-PESA
@@ -165,6 +196,7 @@ def mpesa_cash_payment(request):
         "amount": str(total),
         "amount_paid": str(amount_paid),
         "change_due": str(payment.change_due),
+        "mpesa_reference": payment.mpesa_reference,
     }, status=201)
 
 
@@ -314,6 +346,7 @@ def payment_status(request, checkout_request_id):
         "checkout_request_id": payment.checkout_request_id,
         "merchant_request_id": payment.merchant_request_id,
         "mpesa_receipt_number": payment.mpesa_receipt_number,
+        "mpesa_reference": payment.mpesa_reference,
         "result_code": payment.result_code,
         "result_description": payment.result_description,
         "mpesa_transaction_date": payment.mpesa_transaction_date,

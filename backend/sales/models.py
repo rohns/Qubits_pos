@@ -11,7 +11,7 @@ def generate_receipt_number():
 
 class Sale(models.Model):
     STATUS_CHOICES  = [('PENDING','Pending'),('PAID','Paid'),('FAILED','Failed'),('CANCELLED','Cancelled')]
-    PAYMENT_CHOICES = [('NONE','None'),('CASH','Cash'),('MPESA','M-PESA')]
+    PAYMENT_CHOICES = [('NONE','None'),('CASH','Cash'),('MPESA','M-PESA'),('CREDIT','Credit / Tab')]
 
     receipt_number = models.CharField(max_length=20, unique=True, blank=True, db_index=True)
     cashier        = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, db_index=True)
@@ -19,6 +19,9 @@ class Sale(models.Model):
     status         = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING', db_index=True)
     payment_method = models.CharField(max_length=20, choices=PAYMENT_CHOICES, default='NONE')
     customer_phone = models.CharField(max_length=20, blank=True, null=True)
+    # Who owes for this sale. Only required for CREDIT sales, but kept generally
+    # available since it's also useful on cash/M-PESA receipts.
+    customer_name  = models.CharField(max_length=120, blank=True, null=True, db_index=True)
     created_at     = models.DateTimeField(db_index=True)  # Allow manual dates
     sale_date      = models.DateField(blank=True, null=True, db_index=True)  # Extracted date for reports
 

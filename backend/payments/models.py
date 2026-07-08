@@ -13,6 +13,10 @@ class Payment(models.Model):
     change_due = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     phone_number = models.CharField(max_length=20, blank=True, null=True)
+    # The confirmation code a cashier reads off the customer's phone/SMS when
+    # recording a manually-confirmed M-PESA payment (paybill/till, not STK push).
+    # This is the only audit trail for that flow, so it's required there.
+    mpesa_reference = models.CharField(max_length=20, blank=True, null=True, db_index=True)
     checkout_request_id = models.CharField(max_length=120, blank=True, null=True, db_index=True)
     merchant_request_id = models.CharField(max_length=120, blank=True, null=True)
     mpesa_receipt_number = models.CharField(max_length=120, blank=True, null=True)

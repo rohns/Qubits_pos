@@ -11,9 +11,24 @@ from sales.models import Sale, SaleItem
 from payments.models import Payment
 from expenses.models import Expense
 
+CURRENCY = "KES"
+
 
 def money(value):
-    return float(value or 0)
+    return round(float(value or 0), 2)
+
+
+def pct(part, whole):
+    """Percentage of `whole` that `part` represents, rounded to 1 decimal place."""
+    whole = float(whole or 0)
+    if whole == 0:
+        return 0.0
+    return round(float(part or 0) / whole * 100, 1)
+
+
+def format_kes(value):
+    """e.g. 45320.5 -> 'KES 45,320.50' — for display fields alongside the raw number."""
+    return f"{CURRENCY} {float(value or 0):,.2f}"
 
 
 def date_filter(qs, request, field="created_at__date"):
@@ -36,21 +51,42 @@ def daily_sales(request):
         .annotate(total_sales=Sum("total_amount"), transactions=Count("id"))
         .order_by("day")
     )
-    return Response([
-        {"date": str(i["day"]), "total_sales": money(i["total_sales"]), "transactions": i["transactions"]}
-        for i in data
-    ])
+    return Response({
+        "currency": CURRENCY,
+        "results": [
+            {
+                "date": str(i["day"]),
+                "total_sales": money(i["total_sales"]),
+                "total_sales_display": format_kes(i["total_sales"]),
+                "transactions": i["transactions"],
+            }
+            for i in data
+        ],
+    })
 
 
 @api_view(["GET"])
 @permission_classes([IsAuthenticated])
 def payment_methods(request):
     qs = date_filter(Payment.objects.filter(status="PAID"), request)
-    data = qs.values("method").annotate(total=Sum("amount"), transactions=Count("id")).order_by("method")
-    return Response([
-        {"method": i["method"], "total": money(i["total"]), "transactions": i["transactions"]}
-        for i in data
-    ])
+    data = list(qs.values("method").annotate(total=Sum("amount"), transactions=Count("id")).order_by("method"))
+    grand_total = sum(money(i["total"]) for i in data)
+
+    return Response({
+        "currency": CURRENCY,
+        "grand_total": grand_total,
+        "grand_total_display": format_kes(grand_total),
+        "results": [
+            {
+                "method": i["method"],
+                "total": money(i["total"]),
+                "total_display": format_kes(i["total"]),
+                "transactions": i["transactions"],
+                "percentage": pct(i["total"], grand_total),
+            }
+            for i in data
+        ],
+    })
 
 
 @api_view(["GET"])
@@ -62,10 +98,18 @@ def top_services(request):
         .annotate(quantity_sold=Sum("quantity"), revenue=Sum("line_total"))
         .order_by("-quantity_sold")[:10]
     )
-    return Response([
-        {"service": i["product__name"], "quantity_sold": i["quantity_sold"] or 0, "revenue": money(i["revenue"])}
-        for i in data
-    ])
+    return Response({
+        "currency": CURRENCY,
+        "results": [
+            {
+                "service": i["product__name"],
+                "quantity_sold": i["quantity_sold"] or 0,
+                "revenue": money(i["revenue"]),
+                "revenue_display": format_kes(i["revenue"]),
+            }
+            for i in data
+        ],
+    })
 
 
 @api_view(["GET"])
@@ -78,10 +122,18 @@ def monthly_sales(request):
         .annotate(total_sales=Sum("total_amount"), transactions=Count("id"))
         .order_by("month_date")
     )
-    return Response([
-        {"month": i["month_date"].strftime("%Y-%m") if i["month_date"] else "", "total_sales": money(i["total_sales"]), "transactions": i["transactions"]}
-        for i in data
-    ])
+    return Response({
+        "currency": CURRENCY,
+        "results": [
+            {
+                "month": i["month_date"].strftime("%Y-%m") if i["month_date"] else "",
+                "total_sales": money(i["total_sales"]),
+                "total_sales_display": format_kes(i["total_sales"]),
+                "transactions": i["transactions"],
+            }
+            for i in data
+        ],
+    })
 
 
 @api_view(["GET"])
@@ -93,10 +145,18 @@ def daily_expenses(request):
         .annotate(total_expenses=Sum("amount"), transactions=Count("id"))
         .order_by("date")
     )
-    return Response([
-        {"date": str(i["date"]), "total_expenses": money(i["total_expenses"]), "transactions": i["transactions"]}
-        for i in data
-    ])
+    return Response({
+        "currency": CURRENCY,
+        "results": [
+            {
+                "date": str(i["date"]),
+                "total_expenses": money(i["total_expenses"]),
+                "total_expenses_display": format_kes(i["total_expenses"]),
+                "transactions": i["transactions"],
+            }
+            for i in data
+        ],
+    })
 
 
 @api_view(["GET"])
@@ -110,14 +170,25 @@ def profit_summary(request):
 
     summary = defaultdict(lambda: {"revenue": 0, "expenses": 0})
     for i in sales:
-        summary[str(i["day"])] ["revenue"] = money(i["revenue"])
+        summary[str(i["day"])]["revenue"] = money(i["revenue"])
     for i in expenses:
-        summary[str(i["date"])] ["expenses"] = money(i["expenses"])
+        summary[str(i["date"])]["expenses"] = money(i["expenses"])
 
-    return Response([
-        {"date": d, "revenue": v["revenue"], "expenses": v["expenses"], "profit": v["revenue"] - v["expenses"]}
-        for d, v in sorted(summary.items())
-    ])
+    return Response({
+        "currency": CURRENCY,
+        "results": [
+            {
+                "date": d,
+                "revenue": v["revenue"],
+                "expenses": v["expenses"],
+                "profit": round(v["revenue"] - v["expenses"], 2),
+                "revenue_display": format_kes(v["revenue"]),
+                "expenses_display": format_kes(v["expenses"]),
+                "profit_display": format_kes(v["revenue"] - v["expenses"]),
+            }
+            for d, v in sorted(summary.items())
+        ],
+    })
 
 
 @api_view(["GET"])
@@ -138,15 +209,80 @@ def eod_summary(request):
         .order_by("-qty")[:5]
     )
 
+    # Every transaction for the day — largest amount first — so a manager can
+    # scan the full day's activity, not just the top services.
+    day_sales = (
+        sales_qs
+        .select_related("cashier")
+        .prefetch_related("items__product")
+        .order_by("-total_amount", "-created_at")
+    )
+    transactions = [
+        {
+            "receipt_number": sale.receipt_number,
+            "time": sale.created_at.strftime("%H:%M"),
+            "cashier": sale.cashier.username if sale.cashier else None,
+            "payment_method": sale.payment_method,
+            "amount": money(sale.total_amount),
+            "amount_display": format_kes(sale.total_amount),
+            "items": [
+                {"service": item.product.name, "quantity": item.quantity}
+                for item in sale.items.all()
+            ],
+        }
+        for sale in day_sales
+    ]
+
     exp_agg = Expense.objects.filter(date=target_date).aggregate(t=Sum("amount"), c=Count("id"))
+
+    # Snapshot of the tab/credit ledger as of now (not date-scoped — this is
+    # "how much is currently owed to you", useful to see alongside the day's
+    # cash numbers even though it isn't part of today's revenue).
+    credit_agg = Sale.objects.filter(payment_method="CREDIT", status="PENDING").aggregate(t=Sum("total_amount"), c=Count("id"))
+    outstanding_credit = money(credit_agg["t"])
+
+    cash_total = money(cash_agg["t"])
+    mpesa_total = money(mpesa_agg["t"])
+    collected_total = cash_total + mpesa_total
+    total_revenue = money(agg["total"])
+    total_expenses = money(exp_agg["t"])
+    net_profit = round(total_revenue - total_expenses, 2)
 
     return Response({
         "date": target_date,
-        "total_revenue": money(agg["total"]),
+        "currency": CURRENCY,
+
+        "total_revenue": total_revenue,
+        "total_revenue_display": format_kes(total_revenue),
         "total_transactions": agg["count"] or 0,
-        "cash_collected": money(cash_agg["t"]),
-        "mpesa_collected": money(mpesa_agg["t"]),
-        "total_expenses": money(exp_agg["t"]),
-        "net_profit": money(agg["total"]) - money(exp_agg["t"]),
-        "top_services": [{"service": i["product__name"], "quantity": i["qty"] or 0, "revenue": money(i["rev"])} for i in top],
+
+        "cash_collected": cash_total,
+        "cash_collected_display": format_kes(cash_total),
+        "cash_percentage": pct(cash_total, collected_total),
+
+        "mpesa_collected": mpesa_total,
+        "mpesa_collected_display": format_kes(mpesa_total),
+        "mpesa_percentage": pct(mpesa_total, collected_total),
+
+        "total_expenses": total_expenses,
+        "total_expenses_display": format_kes(total_expenses),
+
+        "net_profit": net_profit,
+        "net_profit_display": format_kes(net_profit),
+
+        "outstanding_credit": outstanding_credit,
+        "outstanding_credit_display": format_kes(outstanding_credit),
+        "outstanding_credit_count": credit_agg["c"] or 0,
+
+        "top_services": [
+            {
+                "service": i["product__name"],
+                "quantity": i["qty"] or 0,
+                "revenue": money(i["rev"]),
+                "revenue_display": format_kes(i["rev"]),
+            }
+            for i in top
+        ],
+
+        "transactions": transactions,
     })
