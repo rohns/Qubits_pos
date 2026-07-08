@@ -12,6 +12,9 @@ export default function Cashier({ user }) {
   const [cart, setCart]               = useState([]);
   const [phone, setPhone]             = useState('');
   const [cashPaid, setCashPaid]       = useState('');
+  const [mpesaRef, setMpesaRef]       = useState('');
+  const [creditName, setCreditName]   = useState('');
+  const [loadingCredit, setLoadingCredit] = useState(false);
   const [receipt, setReceipt]         = useState(null);
   const [pendingMpesa, setPendingMpesa] = useState(null);
   const [loadingCash, setLoadingCash] = useState(false);
@@ -47,6 +50,13 @@ export default function Cashier({ user }) {
   const stopPolling = () => { if (pollingRef.current) { clearInterval(pollingRef.current); pollingRef.current = null; } };
 
   const addToCart = p => {
+    if (p.track_stock) {
+      const inCart = cart.find(i => i.id === p.id)?.quantity || 0;
+      if (p.stock - inCart <= 0) {
+        toast.warning(`${p.name} is out of stock.`);
+        return;
+      }
+    }
     setCart(cur => cur.find(i => i.id === p.id)
       ? cur.map(i => i.id === p.id ? { ...i, quantity: i.quantity + 1 } : i)
       : [...cur, { ...p, quantity: 1 }]
@@ -54,17 +64,26 @@ export default function Cashier({ user }) {
     toast.success(`${p.name} added`, { autoClose: 1000 });
   };
 
-  const updateQty   = (id, qty) => setCart(cur => cur.map(i => i.id === id ? { ...i, quantity: Math.max(1, Number(qty)) } : i));
+  const updateQty = (id, qty) => setCart(cur => cur.map(i => {
+    if (i.id !== id) return i;
+    let q = Math.max(1, Number(qty));
+    if (i.track_stock && q > i.stock) {
+      toast.warning(`Only ${i.stock} of ${i.name} in stock.`);
+      q = i.stock;
+    }
+    return { ...i, quantity: q };
+  }));
   const removeItem  = id => setCart(cur => cur.filter(i => i.id !== id));
-  const clearCart   = () => { setCart([]); setPhone(''); setCashPaid(''); setReceipt(null); };
+  const clearCart   = () => { setCart([]); setPhone(''); setCashPaid(''); setMpesaRef(''); setCreditName(''); setReceipt(null); };
 
   const total  = cart.reduce((s, i) => s + Number(i.price) * i.quantity, 0);
   const change = cashPaid ? Math.max(0, Number(cashPaid) - total) : 0;
 
-  const createSale = async () => {
+  const createSale = async (extra = {}) => {
     const payload = {
       items: cart.map(i => ({ product_id: i.id, quantity: i.quantity })),
       customer_phone: phone || undefined,
+      ...extra,
     };
     // Staff can backdate sales
     if (user?.is_staff && saleDate) {
@@ -76,6 +95,24 @@ export default function Cashier({ user }) {
 
   const buildReceipt = (sale, items, method, extra = {}) =>
     setReceipt({ sale, items, method, total: items.reduce((s, i) => s + Number(i.price) * i.quantity, 0), date: new Date().toLocaleString('en-KE'), ...extra });
+
+  const payOnCredit = async () => {
+    if (!cart.length) return toast.warning('Add at least one service.');
+    if (!creditName.trim()) return toast.warning("Enter the customer's name for the tab.");
+    setLoadingCredit(true);
+    try {
+      const saved = [...cart];
+      const name = creditName.trim();
+      const sale = await createSale({ payment_method: 'CREDIT', customer_name: name });
+      buildReceipt(sale, saved, 'CREDIT', { creditName: name });
+      toast.info(`Put on ${name}'s tab — KES ${total.toLocaleString()} owed.`);
+      setCart([]); setPhone(''); setCreditName('');
+    } catch (err) {
+      const detail = err.response?.data?.non_field_errors?.[0] || err.response?.data?.error || 'Failed to record credit sale.';
+      toast.error(detail);
+      console.error(err.response?.data || err);
+    } finally { setLoadingCredit(false); }
+  };
 
   const payCash = async () => {
     if (!cart.length) return toast.warning('Add at least one service.');
@@ -100,14 +137,16 @@ export default function Cashier({ user }) {
     if (!cart.length) return toast.warning('Add at least one service.');
     if (!cashPaid)    return toast.warning('Enter amount received.');
     if (Number(cashPaid) < total) return toast.warning('Amount received is less than total.');
+    if (!mpesaRef.trim()) return toast.warning('Enter the M-PESA confirmation code from the customer\'s SMS.');
     setLoadingCash(true);
     try {
       const sale  = await createSale();
       const saved = [...cart];
-      const r     = await api.post('/payments/mpesa-cash/', { sale_id: sale.id, amount_paid: cashPaid });
-      buildReceipt(sale, saved, 'M-PESA', { amountPaid: cashPaid, changeDue: r.data.change_due });
+      const ref   = mpesaRef.trim().toUpperCase();
+      const r     = await api.post('/payments/mpesa-cash/', { sale_id: sale.id, amount_paid: cashPaid, mpesa_reference: ref });
+      buildReceipt(sale, saved, 'M-PESA', { amountPaid: cashPaid, changeDue: r.data.change_due, mpesaReceipt: r.data.mpesa_reference });
       toast.success(`M-PESA (cash) recorded — Change: KES ${Number(r.data.change_due).toLocaleString()}`);
-      setCart([]); setPhone(''); setCashPaid('');
+      setCart([]); setPhone(''); setCashPaid(''); setMpesaRef('');
     } catch (err) {
       const detail = err.response?.data?.error || err.response?.data?.detail || 'M-PESA cash payment failed.';
       toast.error(detail);
@@ -203,12 +242,21 @@ export default function Cashier({ user }) {
                   </button>
                   {openCats[cat] && (
                     <div className="service-grid">
-                      {grouped[cat].map(p => (
-                        <button key={p.id} className="service-card" onClick={() => addToCart(p)}>
-                          <div className="service-name">{p.name}</div>
-                          <div className="service-price">KES {Number(p.price).toLocaleString()}</div>
-                        </button>
-                      ))}
+                      {grouped[cat].map(p => {
+                        const outOfStock = p.track_stock && p.stock <= 0;
+                        return (
+                          <button key={p.id} className="service-card" onClick={() => addToCart(p)} disabled={outOfStock}
+                            style={outOfStock ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}>
+                            <div className="service-name">{p.name}</div>
+                            <div className="service-price">KES {Number(p.price).toLocaleString()}</div>
+                            {p.track_stock && (
+                              <div className={`stock-badge ${outOfStock ? 'out' : p.is_low_stock ? 'low' : 'ok'}`}>
+                                {outOfStock ? 'Out of stock' : `${p.stock} left${p.is_low_stock ? ' · low' : ''}`}
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -285,10 +333,22 @@ export default function Cashier({ user }) {
               <button className="btn btn-primary btn-lg w-100 mt-2" onClick={payCash} disabled={loadingCash} title="Ctrl+Enter">
                 {loadingCash ? 'Processing…' : '💵 Pay Cash'}
               </button>
+
+              <label className="form-label mt-2">M-PESA Confirmation Code (from customer's SMS)</label>
+              <input className="form-control mb-2" placeholder="e.g. QGH8XABCDE" value={mpesaRef}
+                onChange={e => setMpesaRef(e.target.value.toUpperCase())} style={{ textTransform: 'uppercase' }} />
               <button className="btn btn-success btn-lg w-100 mt-2" onClick={payMpesaCash} disabled={loadingCash}>
                 {loadingCash ? 'Processing…' : '📱 Paid via M-PESA'}
               </button>
               <button className="btn btn-outline-secondary w-100 mt-2" onClick={clearCart}>Clear Cart (Esc)</button>
+
+              <hr />
+              <label className="form-label">Put on Tab (Credit) — Customer Name</label>
+              <input className="form-control mb-2" placeholder="e.g. John Mwangi" value={creditName}
+                onChange={e => setCreditName(e.target.value)} />
+              <button className="btn btn-warning btn-lg w-100" onClick={payOnCredit} disabled={loadingCredit}>
+                {loadingCredit ? 'Processing…' : '🧾 Put on Tab (Unpaid)'}
+              </button>
 
               {user?.is_staff && (
                 <>
@@ -322,7 +382,8 @@ export default function Cashier({ user }) {
                 <p><strong>Receipt:</strong> {receipt.sale?.receipt_number}</p>
                 <p><strong>Date:</strong> {receipt.date}</p>
                 <p><strong>Cashier:</strong> {user?.username}</p>
-                <p><strong>Payment:</strong> {receipt.method}</p>
+                <p><strong>Payment:</strong> {receipt.method === 'CREDIT' ? 'ON TAB — UNPAID' : receipt.method}</p>
+                {receipt.creditName && <p><strong>Charged to:</strong> {receipt.creditName} (please collect payment later)</p>}
                 {receipt.mpesaReceipt && <p><strong>M-PESA:</strong> {receipt.mpesaReceipt}</p>}
                 {receipt.phone && <p><strong>Phone:</strong> {receipt.phone}</p>}
                 <table className="table table-sm" style={{ marginTop:16 }}>
@@ -359,6 +420,10 @@ export default function Cashier({ user }) {
         .cat-count { font-size:11px; background:var(--surface3); color:var(--text-muted); border-radius:20px; padding:1px 7px; }
         .cat-chevron { font-size:12px; color:var(--text-muted); }
         .service-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; padding:8px 0 4px; }
+        .stock-badge { font-size:10px; margin-top:4px; padding:1px 6px; border-radius:10px; display:inline-block; }
+        .stock-badge.ok  { background:rgba(0,214,143,0.12); color:var(--accent); }
+        .stock-badge.low { background:rgba(255,165,2,0.15); color:var(--warn); }
+        .stock-badge.out { background:rgba(255,71,87,0.15); color:#ff4757; }
         .total-row { display:flex; justify-content:space-between; align-items:center; padding:12px 0; }
         .change-display { background:rgba(0,214,143,0.1); border:1px solid rgba(0,214,143,0.25); border-radius:8px; padding:8px 12px; font-size:14px; color:var(--accent); margin-bottom:8px; }
         .mpesa-spinner { width:18px; height:18px; border:2px solid rgba(255,165,2,0.3); border-top-color:var(--warn); border-radius:50%; animation:spin 0.8s linear infinite; flex-shrink:0; }

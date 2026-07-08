@@ -5,12 +5,14 @@ import Cashier from './components/Cashier';
 import Reports from './components/Reports';
 import Expenses from './components/Expenses';
 import Products from './components/Products';
+import Credit from './components/Credit';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import logo from './assets/logo.svg';
 
 const NAV = [
   { key: 'cashier',  label: 'Cashier',  icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg> },
+  { key: 'credit',   label: 'Credit / Tab', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg> },
   { key: 'reports',  label: 'Reports',  icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
   { key: 'expenses', label: 'Expenses', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> },
 ];
@@ -86,6 +88,7 @@ export default function App() {
 
       <main className="pos-main">
         {page === 'cashier'  && <Cashier user={user} />}
+        {page === 'credit'   && <Credit />}
         {page === 'reports'  && <Reports />}
         {page === 'expenses' && <Expenses />}
         {page === 'products' && isStaff && <Products />}

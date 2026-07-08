@@ -55,7 +55,7 @@ export default function Reports() {
         api.get('/reports/daily-expenses/', params),
         api.get('/reports/profit-summary/', params),
       ]);
-      const arr = (x) => Array.isArray(x) ? x : [];
+      const arr = (x) => Array.isArray(x) ? x : (Array.isArray(x?.results) ? x.results : []);
       const data = { daily: arr(a.data), payments: arr(b.data), top: arr(c.data), monthly: arr(d.data), expenses: arr(e.data), profit: arr(f.data) };
       cacheRef.current = { data, ts: Date.now(), key: cacheKey };
       setDaily(data.daily); setPayments(data.payments); setTop(data.top);
@@ -86,20 +86,31 @@ export default function Reports() {
   const printEod = () => {
     const w = window.open('', '_blank');
     if (!w || !eod) return;
+    const txRows = (eod.transactions || []).map(t => `<tr>
+        <td>${t.receipt_number}</td><td>${t.time}</td><td>${t.cashier || '—'}</td>
+        <td>${t.payment_method}</td>
+        <td>${t.items.map(it => `${it.service} ×${it.quantity}`).join(', ')}</td>
+        <td style="text-align:right">${t.amount_display}</td>
+      </tr>`).join('');
     w.document.write(`<html><head><title>End of Day Report</title><style>body{font-family:sans-serif;padding:24px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #eee}h2,h3{margin:16px 0 8px}</style></head><body>
       <h2>Qubits Cyber Services — End of Day Report</h2>
       <p><strong>Date:</strong> ${eod.date}</p>
       <table><tr><th>Metric</th><th>Value</th></tr>
-        <tr><td>Total Revenue</td><td>KES ${eod.total_revenue.toLocaleString()}</td></tr>
-        <tr><td>Cash Collected</td><td>KES ${eod.cash_collected.toLocaleString()}</td></tr>
-        <tr><td>M-PESA Collected</td><td>KES ${eod.mpesa_collected.toLocaleString()}</td></tr>
-        <tr><td>Total Expenses</td><td>KES ${eod.total_expenses.toLocaleString()}</td></tr>
-        <tr><td>Net Profit</td><td>KES ${eod.net_profit.toLocaleString()}</td></tr>
+        <tr><td>Total Revenue</td><td>${eod.total_revenue_display}</td></tr>
+        <tr><td>Cash Collected</td><td>${eod.cash_collected_display} (${eod.cash_percentage}%)</td></tr>
+        <tr><td>M-PESA Collected</td><td>${eod.mpesa_collected_display} (${eod.mpesa_percentage}%)</td></tr>
+        <tr><td>Total Expenses</td><td>${eod.total_expenses_display}</td></tr>
+        <tr><td>Net Profit</td><td>${eod.net_profit_display}</td></tr>
         <tr><td>Transactions</td><td>${eod.total_transactions}</td></tr>
+        <tr><td>Owed to You (Open Tabs)</td><td>${eod.outstanding_credit_display} (${eod.outstanding_credit_count} open)</td></tr>
       </table>
       <h3>Top Services</h3>
       <table><tr><th>Service</th><th>Qty</th><th>Revenue</th></tr>
-        ${eod.top_services.map(s => `<tr><td>${s.service}</td><td>${s.quantity}</td><td>KES ${s.revenue.toLocaleString()}</td></tr>`).join('')}
+        ${eod.top_services.map(s => `<tr><td>${s.service}</td><td>${s.quantity}</td><td>${s.revenue_display}</td></tr>`).join('')}
+      </table>
+      <h3>All Transactions — largest to smallest</h3>
+      <table><tr><th>Receipt</th><th>Time</th><th>Cashier</th><th>Method</th><th>Items</th><th>Amount</th></tr>
+        ${txRows}
       </table>
       <p style="margin-top:24px;color:#888">Printed ${new Date().toLocaleString('en-KE')}</p>
     </body></html>`);
@@ -158,10 +169,10 @@ export default function Reports() {
           <ResponsiveContainer width="100%" height={260}>
             <PieChart>
               <Pie data={payments} dataKey="total" nameKey="method" outerRadius={90}
-                label={({ method, percent }) => `${method} ${(percent*100).toFixed(0)}%`}>
+                label={({ payload }) => `${payload.method} ${payload.percentage ?? 0}%`}>
                 {payments.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
               </Pie>
-              <Tooltip formatter={v => `KES ${Number(v).toLocaleString()}`} /><Legend />
+              <Tooltip formatter={(v, n, p) => [`KES ${Number(v).toLocaleString()} (${p.payload.percentage ?? 0}%)`, p.payload.method]} /><Legend />
             </PieChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -225,15 +236,17 @@ export default function Reports() {
             <div className="row mb-3">
               {[
                 { label:'Revenue',       value:`KES ${eod.total_revenue.toLocaleString()}`,     color:'#00d68f' },
-                { label:'Cash',          value:`KES ${eod.cash_collected.toLocaleString()}`,     color:'#7bed9f' },
-                { label:'M-PESA',        value:`KES ${eod.mpesa_collected.toLocaleString()}`,    color:'#0066ff' },
+                { label:'Cash',          value:`KES ${eod.cash_collected.toLocaleString()}`,     color:'#7bed9f', sub: `${eod.cash_percentage ?? 0}% of collected` },
+                { label:'M-PESA',        value:`KES ${eod.mpesa_collected.toLocaleString()}`,    color:'#0066ff', sub: `${eod.mpesa_percentage ?? 0}% of collected` },
                 { label:'Expenses',      value:`KES ${eod.total_expenses.toLocaleString()}`,     color:'#ff4757' },
                 { label:'Net Profit',    value:`KES ${eod.net_profit.toLocaleString()}`,         color:'#ffa502' },
                 { label:'Transactions',  value:eod.total_transactions,                           color:'var(--text-muted)' },
+                { label:'Owed to You (Tabs)', value:eod.outstanding_credit_display || `KES ${(eod.outstanding_credit || 0).toLocaleString()}`, color:'#ff4757', sub: `${eod.outstanding_credit_count || 0} open tabs` },
               ].map((s, i) => (
                 <div className="col-md-2" key={i} style={{ padding:'6px 10px' }}>
                   <div style={{ fontSize:11, color:'var(--text-muted)', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:4 }}>{s.label}</div>
                   <div style={{ fontSize:18, fontFamily:'var(--mono)', fontWeight:700, color:s.color }}>{s.value}</div>
+                  {s.sub && <div style={{ fontSize:11, color:'var(--text-muted)' }}>{s.sub}</div>}
                 </div>
               ))}
             </div>
@@ -250,6 +263,34 @@ export default function Reports() {
                 {!eod.top_services.length && <tr><td colSpan={3} style={{ color:'var(--text-muted)', textAlign:'center' }}>No sales on this date.</td></tr>}
               </tbody>
             </table>
+
+            <h6 className="fw-bold mt-4" style={{ fontSize:13, textTransform:'uppercase', letterSpacing:'0.05em', color:'var(--text-muted)' }}>
+              All Transactions — largest to smallest
+            </h6>
+            <table className="table">
+              <thead><tr><th>Receipt</th><th>Time</th><th>Cashier</th><th>Method</th><th>Items</th><th style={{textAlign:'right'}}>Amount</th></tr></thead>
+              <tbody>
+                {(eod.transactions || []).map((t, i) => (
+                  <tr key={i}>
+                    <td style={{ fontFamily:'var(--mono)', fontSize:12 }}>{t.receipt_number}</td>
+                    <td>{t.time}</td>
+                    <td>{t.cashier || '—'}</td>
+                    <td>
+                      <span className={`method-badge ${t.payment_method === 'CASH' ? 'cash' : 'mpesa'}`}>
+                        {t.payment_method === 'CASH' ? '💵 Cash' : '📱 M-PESA'}
+                      </span>
+                    </td>
+                    <td style={{ fontSize:12, color:'var(--text-muted)' }}>
+                      {t.items.map(it => `${it.service} ×${it.quantity}`).join(', ')}
+                    </td>
+                    <td style={{ textAlign:'right', fontFamily:'var(--mono)', color:'var(--accent)', fontWeight:600 }}>
+                      {t.amount_display}
+                    </td>
+                  </tr>
+                ))}
+                {!(eod.transactions || []).length && <tr><td colSpan={6} style={{ color:'var(--text-muted)', textAlign:'center' }}>No transactions on this date.</td></tr>}
+              </tbody>
+            </table>
           </div>
         ) : (
           <div className="card-body" style={{ textAlign:'center', color:'var(--text-muted)', padding:'24px 0' }}>
@@ -257,6 +298,12 @@ export default function Reports() {
           </div>
         )}
       </div>
+
+      <style>{`
+        .method-badge { display:inline-block; padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; white-space:nowrap; }
+        .method-badge.cash  { background:rgba(123,237,159,0.15); color:#7bed9f; }
+        .method-badge.mpesa { background:rgba(0,102,255,0.15); color:#0066ff; }
+      `}</style>
     </div>
   );
 }
