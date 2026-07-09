@@ -90,7 +90,7 @@ export default function App() {
         {page === 'cashier'  && <Cashier user={user} />}
         {page === 'credit'   && <Credit />}
         {page === 'reports'  && <Reports />}
-        {page === 'expenses' && <Expenses />}
+        {page === 'expenses' && <Expenses user={user} />}
         {page === 'products' && isStaff && <Products />}
       </main>
     </div>

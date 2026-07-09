@@ -17,8 +17,9 @@ const PAYMENT_METHODS = [
   { label: 'Bank', value: 'BANK' }, { label: 'Other', value: 'OTHER' },
 ];
 
-function Expenses() {
+function Expenses({ user }) {
   const today = new Date().toISOString().slice(0, 10);
+  const isStaff = Boolean(user?.is_staff || user?.is_superuser);
   const [form, setForm] = useState({ date: today, category: 'OTHER', description: '', amount: '', payment_method: 'CASH' });
   const [expenses, setExpenses] = useState([]);
   const [msg, setMsg] = useState('');
@@ -47,7 +48,7 @@ function Expenses() {
     }
     setLoading(true);
     try {
-      await api.post('/expenses/', { ...form, amount: Number(form.amount) });
+      await api.post('/expenses/', { ...form, date: isStaff ? form.date : today, amount: Number(form.amount) });
       setMsg('Expense recorded successfully.');
       toast.success('Expense recorded successfully.');
       setForm({ date: today, category: 'OTHER', description: '', amount: '', payment_method: 'CASH' });
@@ -105,7 +106,11 @@ function Expenses() {
                 <div className="row">
                   <div className="col-md-3">
                     <label className="form-label">Date</label>
-                    <input type="date" className="form-control mb-2" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
+                    <input type="date" className="form-control mb-2" value={form.date}
+                      disabled={!isStaff}
+                      title={!isStaff ? "Only staff can log an expense for a past date." : undefined}
+                      onChange={e => setForm({ ...form, date: e.target.value })} />
+                    {!isStaff && <small className="text-muted">Locked to today — only staff can backdate.</small>}
                   </div>
                   <div className="col-md-3">
                     <label className="form-label">Category</label>
