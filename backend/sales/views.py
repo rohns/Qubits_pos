@@ -40,9 +40,10 @@ class SaleViewSet(viewsets.ModelViewSet):
         """
         The tab/credit ledger — every service given out but not yet fully paid
         for, with who owes, how much is still outstanding (after any partial
-        payments), and when it was offered. Settle these — fully or partially
-        — via POST /api/payments/credit-payment/ with sale_id, amount, and the
-        M-PESA confirmation code.
+        payments), and when it was offered. Settle these — fully or partially,
+        cash or M-PESA — via POST /api/payments/credit-payment/ with sale_id,
+        amount, and method (the M-PESA confirmation code is only required
+        when method is "MPESA").
         """
         qs = (
             Sale.objects.filter(payment_method='CREDIT', status='PENDING')

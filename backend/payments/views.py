@@ -87,8 +87,8 @@ def cash_payment(request):
 
             if sale.payment_method == "CREDIT":
                 return Response({
-                    "error": "This is a tab/credit sale. Tab payments must go through the credit payment "
-                             "endpoint and always require an M-PESA confirmation code."
+                    "error": "This is a tab/credit sale. Use POST /api/payments/credit-payment/ instead — "
+                             "it supports partial amounts for both cash and M-PESA."
                 }, status=400)
 
             if sale.status == "PAID":
@@ -166,8 +166,8 @@ def mpesa_cash_payment(request):
 
             if sale.payment_method == "CREDIT":
                 return Response({
-                    "error": "This is a tab/credit sale. Use the credit payment endpoint instead — it "
-                             "supports partial amounts and always requires an M-PESA confirmation code."
+                    "error": "This is a tab/credit sale. Use POST /api/payments/credit-payment/ instead — "
+                             "it supports partial amounts for both cash and M-PESA."
                 }, status=400)
 
             if sale.status == "PAID":
@@ -217,23 +217,28 @@ def mpesa_cash_payment(request):
 @permission_classes([IsAuthenticated])
 def credit_payment(request):
     """
-    Record a payment toward an outstanding tab/credit sale. Unlike the regular
-    cash/mpesa-cash endpoints, this accepts ANY amount up to what's still
-    owed — a customer can pay off part of their tab and the rest stays
-    outstanding — but it always requires the M-PESA confirmation code, since
-    that's the only accountability trail for money collected against a tab
-    after the fact.
+    Record a payment toward an outstanding tab/credit sale. Accepts ANY amount
+    up to what's still owed — a customer can pay off part of their tab and the
+    rest stays outstanding. Works for both cash and M-PESA: the confirmation
+    code is only required when the method is actually M-PESA, since that's
+    the only accountability trail for that payment type. Cash tab payments
+    don't need one. Either way, the remaining balance is computed from every
+    PAID payment recorded against the sale so far, regardless of method.
     """
     sale_id = request.data.get("sale_id")
     amount = request.data.get("amount")
+    method = (request.data.get("method") or "MPESA").strip().upper()
     mpesa_reference = (request.data.get("mpesa_reference") or "").strip().upper()
+
+    if method not in ("CASH", "MPESA"):
+        return Response({"error": "method must be CASH or MPESA"}, status=400)
 
     if not sale_id or amount in (None, ""):
         return Response({"error": "sale_id and amount are required"}, status=400)
 
-    if not mpesa_reference:
+    if method == "MPESA" and not mpesa_reference:
         return Response(
-            {"error": "mpesa_reference is required — enter the M-PESA confirmation code from the customer's SMS."},
+            {"error": "mpesa_reference is required for M-PESA tab payments — enter the confirmation code from the customer's SMS."},
             status=400,
         )
 
@@ -255,6 +260,8 @@ def credit_payment(request):
             if sale.status == "PAID":
                 return Response({"error": "This tab is already fully paid."}, status=400)
 
+            # Balance is always computed from every PAID payment against this
+            # sale so far, whatever mix of cash/M-PESA partial payments led here.
             paid_so_far = sale.payments.filter(status="PAID").aggregate(t=Sum("amount"))["t"] or Decimal("0")
             total = Decimal(str(sale.total_amount))
             remaining = total - paid_so_far
@@ -267,12 +274,12 @@ def credit_payment(request):
 
             payment = Payment.objects.create(
                 sale=sale,
-                method="MPESA",
+                method=method,
                 status="PAID",
                 amount=amount,
                 amount_paid=amount,
                 change_due=Decimal("0"),
-                mpesa_reference=mpesa_reference,
+                mpesa_reference=mpesa_reference if method == "MPESA" else None,
             )
 
             new_paid_so_far = paid_so_far + amount
@@ -281,7 +288,7 @@ def credit_payment(request):
 
             # Note: payment_method deliberately stays "CREDIT" even once fully
             # settled, so reporting can still tell a settled tab apart from an
-            # ordinary walk-in M-PESA sale.
+            # ordinary walk-in M-PESA/cash sale.
             if fully_settled:
                 sale.status = "PAID"
                 sale.save(update_fields=["status"])
@@ -292,12 +299,13 @@ def credit_payment(request):
         "message": "Tab fully settled" if fully_settled else "Partial tab payment recorded",
         "payment_id": payment.id,
         "sale_id": sale.id,
+        "method": method,
         "amount_paid_now": str(amount),
         "total_paid_so_far": str(new_paid_so_far),
         "remaining_balance": str(max(new_remaining, Decimal("0"))),
         "fully_settled": fully_settled,
         "sale_status": sale.status,
-        "mpesa_reference": mpesa_reference,
+        "mpesa_reference": mpesa_reference if method == "MPESA" else None,
     }, status=201)
 
 
