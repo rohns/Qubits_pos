@@ -8,6 +8,7 @@ export default function Credit() {
   const [loading, setLoading]   = useState(false);
   const [paying, setPaying]     = useState(null); // the sale currently being paid against
   const [amount, setAmount]     = useState('');
+  const [method, setMethod]     = useState('CASH');
   const [mpesaRef, setMpesaRef] = useState('');
   const [busy, setBusy]         = useState(false);
 
@@ -26,6 +27,7 @@ export default function Credit() {
   const openPay = sale => {
     setPaying(sale);
     setAmount(sale.remaining_balance);
+    setMethod('CASH');
     setMpesaRef('');
   };
 
@@ -35,14 +37,12 @@ export default function Credit() {
     if (Number(amount) > paying.remaining_balance) {
       return toast.warning(`Amount can't exceed the remaining balance of KES ${paying.remaining_balance.toLocaleString()}.`);
     }
-    if (!mpesaRef.trim()) return toast.warning("Enter the M-PESA confirmation code from the customer's SMS.");
+    if (method === 'MPESA' && !mpesaRef.trim()) return toast.warning("Enter the M-PESA confirmation code from the customer's SMS.");
     setBusy(true);
     try {
-      const r = await api.post('/payments/credit-payment/', {
-        sale_id: paying.sale_id,
-        amount,
-        mpesa_reference: mpesaRef.trim().toUpperCase(),
-      });
+      const payload = { sale_id: paying.sale_id, amount, method };
+      if (method === 'MPESA') payload.mpesa_reference = mpesaRef.trim().toUpperCase();
+      const r = await api.post('/payments/credit-payment/', payload);
       if (r.data.fully_settled) {
         toast.success(`${paying.customer_name}'s tab fully settled.`);
       } else {
@@ -129,17 +129,26 @@ export default function Credit() {
               You can enter any amount up to the balance — partial payments are fine.
             </p>
             <div className="row">
-              <div className="col-md-4">
+              <div className="col-md-3">
                 <label className="form-label">Amount Received (KES)</label>
                 <input type="number" className="form-control mb-2" value={amount}
                   max={paying.remaining_balance} onChange={e => setAmount(e.target.value)} autoFocus />
               </div>
-              <div className="col-md-5">
-                <label className="form-label">M-PESA Confirmation Code (required)</label>
-                <input className="form-control mb-2" placeholder="e.g. QGH8XABCDE" value={mpesaRef}
-                  onChange={e => setMpesaRef(e.target.value.toUpperCase())} style={{ textTransform: 'uppercase' }} />
+              <div className="col-md-3">
+                <label className="form-label">Method</label>
+                <select className="form-select mb-2" value={method} onChange={e => setMethod(e.target.value)}>
+                  <option value="CASH">💵 Cash</option>
+                  <option value="MPESA">📱 M-PESA</option>
+                </select>
               </div>
-              <div className="col-md-3 d-flex align-items-end">
+              {method === 'MPESA' && (
+                <div className="col-md-4">
+                  <label className="form-label">M-PESA Confirmation Code (required)</label>
+                  <input className="form-control mb-2" placeholder="e.g. QGH8XABCDE" value={mpesaRef}
+                    onChange={e => setMpesaRef(e.target.value.toUpperCase())} style={{ textTransform: 'uppercase' }} />
+                </div>
+              )}
+              <div className={method === 'MPESA' ? 'col-md-2' : 'col-md-6'} style={{ display: 'flex', alignItems: 'flex-end' }}>
                 <button className="btn btn-success w-100 mb-2" onClick={submitPayment} disabled={busy}>
                   {busy ? 'Saving…' : 'Record Payment'}
                 </button>
@@ -154,7 +163,7 @@ export default function Credit() {
         <div className="card-body" style={{ padding: 0 }}>
           <table className="table">
             <thead>
-              <tr><th>Customer</th><th>Phone</th><th>Items</th><th>Offered</th><th>Cashier</th><th style={{ textAlign: 'right' }}>Paid</th><th style={{ textAlign: 'right' }}>Owed</th><th>Action</th></tr>
+              <tr><th>Customer</th><th>Phone</th><th>Items</th><th>Offered</th><th>Cashier</th><th style={{ textAlign: 'right' }}>Amount</th><th style={{ textAlign: 'right' }}>Paid</th><th style={{ textAlign: 'right' }}>Owed</th><th>Action</th></tr>
             </thead>
             <tbody>
               {sales.map(s => (
@@ -169,17 +178,18 @@ export default function Credit() {
                     <div className="text-muted" style={{ fontSize: 11 }}>{timeAgo(s.offered_at)}</div>
                   </td>
                   <td>{s.cashier || '—'}</td>
+                  <td style={{ textAlign: 'right', fontFamily: 'var(--mono)' }}>{s.total_amount_display}</td>
                   <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: 'var(--text-muted)' }}>
                     {s.amount_paid_so_far > 0 ? s.amount_paid_so_far_display : '—'}
                   </td>
                   <td style={{ textAlign: 'right', fontFamily: 'var(--mono)', color: '#ff4757', fontWeight: 600 }}>{s.remaining_balance_display}</td>
                   <td>
-                    <button className="btn btn-sm btn-outline-success" onClick={() => openPay(s)}>📱 Record Payment</button>
+                    <button className="btn btn-sm btn-outline-success" onClick={() => openPay(s)}>Record Payment</button>
                   </td>
                 </tr>
               ))}
               {!sales.length && (
-                <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                <tr><td colSpan={9} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
                   {loading ? 'Loading…' : 'No outstanding tabs.'}
                 </td></tr>
               )}
