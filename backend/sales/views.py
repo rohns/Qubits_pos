@@ -38,14 +38,15 @@ class SaleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def credit(self, request):
         """
-        The tab/credit ledger — every service given out but not yet paid for,
-        with who owes, how much, and when it was offered. Settle one of these
-        the normal way: call /api/payments/cash/ or /api/payments/mpesa-cash/
-        with its sale_id once the customer pays.
+        The tab/credit ledger — every service given out but not yet fully paid
+        for, with who owes, how much is still outstanding (after any partial
+        payments), and when it was offered. Settle these — fully or partially
+        — via POST /api/payments/credit-payment/ with sale_id, amount, and the
+        M-PESA confirmation code.
         """
         qs = (
             Sale.objects.filter(payment_method='CREDIT', status='PENDING')
-            .prefetch_related('items__product')
+            .prefetch_related('items__product', 'payments')
             .select_related('cashier')
         )
         name_filter = request.query_params.get('customer_name')
@@ -56,17 +57,23 @@ class SaleViewSet(viewsets.ModelViewSet):
         results = []
         by_customer = defaultdict(lambda: {'total_owed': 0, 'count': 0})
         for sale in qs:
-            amount = float(sale.total_amount)
+            total = float(sale.total_amount)
+            paid_so_far = sum(float(p.amount) for p in sale.payments.all() if p.status == 'PAID')
+            remaining = round(total - paid_so_far, 2)
             key = sale.customer_name or 'Unknown'
-            by_customer[key]['total_owed'] += amount
+            by_customer[key]['total_owed'] += remaining
             by_customer[key]['count'] += 1
             results.append({
                 'sale_id': sale.id,
                 'receipt_number': sale.receipt_number,
                 'customer_name': sale.customer_name,
                 'customer_phone': sale.customer_phone,
-                'amount': round(amount, 2),
-                'amount_display': f"KES {amount:,.2f}",
+                'total_amount': round(total, 2),
+                'total_amount_display': f"KES {total:,.2f}",
+                'amount_paid_so_far': round(paid_so_far, 2),
+                'amount_paid_so_far_display': f"KES {paid_so_far:,.2f}",
+                'remaining_balance': remaining,
+                'remaining_balance_display': f"KES {remaining:,.2f}",
                 'offered_at': sale.created_at,
                 'cashier': sale.cashier.username if sale.cashier else None,
                 'items': [
@@ -75,7 +82,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 ],
             })
 
-        total_outstanding = sum(r['amount'] for r in results)
+        total_outstanding = sum(r['remaining_balance'] for r in results)
 
         return Response({
             'currency': 'KES',

@@ -7,6 +7,7 @@ import requests
 from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
+from django.db.models import Sum
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
@@ -84,6 +85,12 @@ def cash_payment(request):
         with transaction.atomic():
             sale = Sale.objects.select_for_update().get(id=sale_id)
 
+            if sale.payment_method == "CREDIT":
+                return Response({
+                    "error": "This is a tab/credit sale. Tab payments must go through the credit payment "
+                             "endpoint and always require an M-PESA confirmation code."
+                }, status=400)
+
             if sale.status == "PAID":
                 existing = sale.payments.filter(status="PAID").order_by("-created_at").first()
                 return Response({
@@ -157,6 +164,12 @@ def mpesa_cash_payment(request):
         with transaction.atomic():
             sale = Sale.objects.select_for_update().get(id=sale_id)
 
+            if sale.payment_method == "CREDIT":
+                return Response({
+                    "error": "This is a tab/credit sale. Use the credit payment endpoint instead — it "
+                             "supports partial amounts and always requires an M-PESA confirmation code."
+                }, status=400)
+
             if sale.status == "PAID":
                 existing = sale.payments.filter(status="PAID").order_by("-created_at").first()
                 return Response({
@@ -197,6 +210,94 @@ def mpesa_cash_payment(request):
         "amount_paid": str(amount_paid),
         "change_due": str(payment.change_due),
         "mpesa_reference": payment.mpesa_reference,
+    }, status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def credit_payment(request):
+    """
+    Record a payment toward an outstanding tab/credit sale. Unlike the regular
+    cash/mpesa-cash endpoints, this accepts ANY amount up to what's still
+    owed — a customer can pay off part of their tab and the rest stays
+    outstanding — but it always requires the M-PESA confirmation code, since
+    that's the only accountability trail for money collected against a tab
+    after the fact.
+    """
+    sale_id = request.data.get("sale_id")
+    amount = request.data.get("amount")
+    mpesa_reference = (request.data.get("mpesa_reference") or "").strip().upper()
+
+    if not sale_id or amount in (None, ""):
+        return Response({"error": "sale_id and amount are required"}, status=400)
+
+    if not mpesa_reference:
+        return Response(
+            {"error": "mpesa_reference is required — enter the M-PESA confirmation code from the customer's SMS."},
+            status=400,
+        )
+
+    try:
+        amount = Decimal(str(amount))
+    except (InvalidOperation, TypeError):
+        return Response({"error": "amount must be a valid number"}, status=400)
+
+    if amount <= 0:
+        return Response({"error": "amount must be greater than zero"}, status=400)
+
+    try:
+        with transaction.atomic():
+            sale = Sale.objects.select_for_update().get(id=sale_id)
+
+            if sale.payment_method != "CREDIT":
+                return Response({"error": "This sale isn't a tab/credit sale."}, status=400)
+
+            if sale.status == "PAID":
+                return Response({"error": "This tab is already fully paid."}, status=400)
+
+            paid_so_far = sale.payments.filter(status="PAID").aggregate(t=Sum("amount"))["t"] or Decimal("0")
+            total = Decimal(str(sale.total_amount))
+            remaining = total - paid_so_far
+
+            if amount > remaining:
+                return Response(
+                    {"error": f"Amount exceeds the remaining balance of KES {remaining:,.2f}."},
+                    status=400,
+                )
+
+            payment = Payment.objects.create(
+                sale=sale,
+                method="MPESA",
+                status="PAID",
+                amount=amount,
+                amount_paid=amount,
+                change_due=Decimal("0"),
+                mpesa_reference=mpesa_reference,
+            )
+
+            new_paid_so_far = paid_so_far + amount
+            new_remaining = total - new_paid_so_far
+            fully_settled = new_remaining <= 0
+
+            # Note: payment_method deliberately stays "CREDIT" even once fully
+            # settled, so reporting can still tell a settled tab apart from an
+            # ordinary walk-in M-PESA sale.
+            if fully_settled:
+                sale.status = "PAID"
+                sale.save(update_fields=["status"])
+    except Sale.DoesNotExist:
+        return Response({"error": "Sale not found"}, status=404)
+
+    return Response({
+        "message": "Tab fully settled" if fully_settled else "Partial tab payment recorded",
+        "payment_id": payment.id,
+        "sale_id": sale.id,
+        "amount_paid_now": str(amount),
+        "total_paid_so_far": str(new_paid_so_far),
+        "remaining_balance": str(max(new_remaining, Decimal("0"))),
+        "fully_settled": fully_settled,
+        "sale_status": sale.status,
+        "mpesa_reference": mpesa_reference,
     }, status=201)
 
 

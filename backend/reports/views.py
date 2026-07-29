@@ -239,7 +239,12 @@ def eod_summary(request):
     # "how much is currently owed to you", useful to see alongside the day's
     # cash numbers even though it isn't part of today's revenue).
     credit_agg = Sale.objects.filter(payment_method="CREDIT", status="PENDING").aggregate(t=Sum("total_amount"), c=Count("id"))
-    outstanding_credit = money(credit_agg["t"])
+    credit_paid_so_far = Payment.objects.filter(
+        sale__payment_method="CREDIT", sale__status="PENDING", status="PAID"
+    ).aggregate(t=Sum("amount"))["t"]
+    # Partial payments reduce what's actually still owed, even though the sale
+    # itself stays PENDING/CREDIT until fully settled.
+    outstanding_credit = round(money(credit_agg["t"]) - money(credit_paid_so_far), 2)
 
     cash_total = money(cash_agg["t"])
     mpesa_total = money(mpesa_agg["t"])
